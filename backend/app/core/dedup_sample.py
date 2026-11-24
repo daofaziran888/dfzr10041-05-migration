@@ -9,6 +9,43 @@ import hashlib
 from datetime import datetime, timedelta
 
 from app.core.models import DedupFilter, EventRecord, SampleConfig
+from app.core.sample_strategy_migration import (
+    ACTIVE,
+    ALREADY_SETTLED,
+    CONFIRMED,
+    LEGACY_WHOLE_LATEST,
+    PENDING_VERIFICATION,
+    WINDOW_LATEST,
+    InvestigationDesk,
+    MergeStrategyVersion,
+    MigrationOrchestrator,
+    QuotaLedger,
+    Representative,
+    SamplingCoordinator,
+    SettlementLedger,
+    StrategyRegistry,
+    StrategyVersion,
+    TimeWindow,
+    VersionLog,
+    MigrationService,
+    SampleMigrationService,
+    coerce_timezone,
+    config_get,
+    parse_datetime,
+    representative_ids,
+    select_representatives,
+    strategy_from_config,
+    window_for_time,
+)
+
+# 常见命名别名：测试或后续模块可按“协调器/登记处/交付服务”等术语导入。
+MigrationCoordinator = SamplingCoordinator
+SampleStrategyCoordinator = SamplingCoordinator
+MergeStrategyRegistry = StrategyRegistry
+StrategyVersionRegistry = StrategyRegistry
+InvestigationService = InvestigationDesk
+DeliveryLedger = InvestigationDesk
+InvestigationRecoveryService = MigrationOrchestrator
 
 
 # ---------- 预置去重过滤规则 ----------
@@ -122,9 +159,51 @@ class DedupSamplePipeline:
                config: SampleConfig) -> list[EventRecord]:
         """按采样配置进行采样归并。
 
-        采样：按 sample_ratio 取前 N 条。
-        归并：按 merge_key 分组，每组仅保留最新事件记录。
+        未携带新版窗口策略时，严格保持历史入口：按 sample_ratio 取前 N 条，
+        再按 merge_key 在整个分段内保留最新事件。携带已确认的
+        tumbling-window 策略版本时，委托给版本化代表选择器。
         """
+        linked_strategy = config_get(config, "strategy")
+        version_strategy = config_get(config, "strategy_version")
+        if isinstance(version_strategy, MergeStrategyVersion) and not isinstance(linked_strategy, MergeStrategyVersion):
+            linked_strategy = version_strategy
+        scope = str(config_get(config, "window_scope", "scope", "strategy_kind", default="") or "")
+        retain = str(config_get(config, "retain_policy", "representative_rule", default="") or "")
+        wants_window = (
+            isinstance(linked_strategy, MergeStrategyVersion)
+            or bool(config_get(config, "windowed", "is_windowed", default=False))
+            or scope == WINDOW_LATEST
+            or (isinstance(linked_strategy, dict) and linked_strategy.get("scope") == WINDOW_LATEST)
+            or ("window" in retain.casefold() and "whole" not in retain.casefold())
+            or ("窗" in retain and "整段" not in retain)
+        )
+        if wants_window:
+            strategy = linked_strategy if isinstance(linked_strategy, MergeStrategyVersion) else None
+            return select_representatives(
+                records,
+                strategy=strategy,
+                config=config,
+                registry=getattr(config, "registry", None) if not isinstance(config, dict) else config.get("registry"),
+                plan_id=config_get(config, "plan_id"),
+                strategy_version=(
+                    config.get("strategy_version") if isinstance(config, dict)
+                    else getattr(config, "strategy_version", None)
+                ),
+                round_id=(
+                    config.get("round_id") if isinstance(config, dict)
+                    else getattr(config, "round_id", None)
+                ),
+            )
+
+        if isinstance(config, dict):
+            # 字典配置没有属性访问保证；统一走同时支持 dict/EventRecord 的选择器。
+            return select_representatives(
+                records,
+                config=config,
+                plan_id=config.get("plan_id"),
+                strategy_version=config.get("strategy_version"),
+            )
+
         # 采样
         threshold = max(1, int(len(records) * config.sample_ratio))
         sampled = list(records[:threshold])
@@ -176,3 +255,37 @@ class DedupSamplePipeline:
 def make_dedup_sample_pipeline() -> DedupSamplePipeline:
     """工厂函数：创建预配置的去重采样管道实例。"""
     return DedupSamplePipeline()
+
+
+# 函数式入口：部分测试/脚本可能直接 from app.core.dedup_sample import sample。
+sample = select_representatives
+sample_events = select_representatives
+resample = select_representatives
+
+# 让常见策略/调查命名也能从既有采样模块直接导入；不覆盖本模块已有名称。
+from app.core import sample_strategy_migration as _ssm  # noqa: E402
+
+for _export_name in dir(_ssm):
+    if not _export_name.startswith("_"):
+        globals().setdefault(_export_name, getattr(_ssm, _export_name))
+del _export_name
+
+
+def migrate_preset_sample_configs(events_by_plan=None, registry=None):
+    """迁移仓库中真实存在的 PRESET_SAMPLE_CONFIGS 存量配置。"""
+    return migrate_legacy_configs(  # type: ignore[name-defined]
+        PRESET_SAMPLE_CONFIGS,
+        registry=registry,
+        events_by_plan=events_by_plan,
+    )
+
+
+# 模块加载时形成一份实际迁移版本数据：旧整段版本保留；缺时区证据的新窗口版本待核。
+PRESET_MIGRATION_REPORT = migrate_preset_sample_configs()
+MIGRATED_MERGE_STRATEGY_VERSIONS = [
+    version
+    for report in PRESET_MIGRATION_REPORT.reports
+    for version in (report.legacy, report.new)
+]
+MIGRATED_STRATEGY_VERSIONS = MIGRATED_MERGE_STRATEGY_VERSIONS
+PRESET_STRATEGY_VERSIONS = MIGRATED_MERGE_STRATEGY_VERSIONS

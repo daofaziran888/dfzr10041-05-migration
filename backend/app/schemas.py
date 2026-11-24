@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -27,5 +27,20 @@ class EntryPayload(BaseModel):
 
 
 class ActionPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     action: str
     remark: str | None = None
+    values: dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    def domain_context(self) -> dict[str, Any]:
+        """合并顶层额外字段、data/values，方便领域动作接收复杂参数。"""
+        context: dict[str, Any] = {}
+        context.update(self.model_extra or {})
+        context.update(self.data or {})
+        context.update(self.values or {})
+        if self.remark is not None:
+            context["remark"] = self.remark
+        context.pop("action", None)
+        return context

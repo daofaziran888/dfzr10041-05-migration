@@ -11,6 +11,7 @@ from app.services.batch_checkpoint import BatchCheckpointService
 from app.services.event_store import EventStoreService
 from app.services.anomaly_rule import AnomalyRuleService
 from app.services.sample_job import SampleJobService
+from app.services.sample_strategy import SampleStrategyService
 from app.services.field_enrich import FieldEnrichService
 from app.services.archive_policy import ArchivePolicyService
 from app.services.forward_rule import ForwardRuleService
@@ -35,6 +36,7 @@ SERVICES: dict[str, BaseModuleService] = {
     "event_store": EventStoreService(),
     "anomaly_rule": AnomalyRuleService(),
     "sample_job": SampleJobService(),
+    "sample_strategy": SampleStrategyService(),
     "field_enrich": FieldEnrichService(),
     "archive_policy": ArchivePolicyService(),
     "forward_rule": ForwardRuleService(),

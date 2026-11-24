@@ -260,13 +260,29 @@ class DedupFilter:
 
 @dataclass
 class SampleConfig:
-    """采样归并配置——对应 sample_job 模块。"""
+    """采样归并配置——对应 sample_job 模块。
+
+    旧调用只使用前六个基础字段，行为保持“整个输入分段取最新”。迁移后的调用可
+    显式携带 strategy/version/windows，从而走固定窗口代表选择。
+    """
     plan_id: str
     event_type_id: str
     sample_ratio: float
     merge_key: str = ""
     merge_window_minutes: int = 5
     retain_policy: str = "latest"
+    strategy_id: str | None = None
+    strategy_version: Any = None
+    strategy: Any = None
+    windowed: bool = False
+    window_scope: str = "legacy_whole_segment_latest"
+    windows: list[Any] | None = None
+    source_timezone: str | None = None
+    timezone_verified: bool | None = None
+    timezone_status: str | None = None
+    status: str | None = None
+    registry: Any = None
+    round_id: str | None = None
 
 
 @dataclass
